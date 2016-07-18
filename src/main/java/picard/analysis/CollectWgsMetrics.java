@@ -55,6 +55,9 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.IntStream;
 
 /**
@@ -202,6 +205,8 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         new CollectWgsMetrics().instanceMainWithExit(args);
     }
 
+    final int MAX_BUFFER_SIZE = 200;
+
     @Override
     protected int doWork() {
         IOUtil.assertFileIsReadable(INPUT);
@@ -248,23 +253,54 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         final long stopAfter = STOP_AFTER - 1;
         long counter = 0;
 
+        ExecutorService service = Executors.newFixedThreadPool(2);
+        List <Object[]> buffer = new ArrayList(MAX_BUFFER_SIZE);
+
         // Loop through all the loci
         while (iterator.hasNext()) {
             final SamLocusIterator.LocusInfo info = iterator.next();
             final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
 
+
+
             // Check that the reference is not N
             final byte base = ref.getBases()[info.getPosition() - 1];
             if (SequenceUtil.isNoCall(base)) continue;
 
-            // add to the collector
-            collector.addInfo(info, ref);
 
-            // Record progress and perhaps stop
-            progress.record(info.getSequenceName(), info.getPosition());
-            if (usingStopAfter && ++counter > stopAfter) break;
+            buffer.add(new Object[]{info,ref});
+
+            //Check that the buffer is full or the last required record was added
+            final boolean stop = usingStopAfter && ++counter > stopAfter;
+            if (buffer.size() < MAX_BUFFER_SIZE && !stop)
+                continue;
+
+
+            final List<Object[]> tmpBuffer = buffer;
+            buffer = new ArrayList<>(MAX_BUFFER_SIZE);
+
+            service.submit(new Runnable(){
+
+                @Override
+                public void run() {
+                    for (final Object[] pair : tmpBuffer) {
+                        final SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) pair[0];
+                        final ReferenceSequence ref = (ReferenceSequence) pair[1];
+
+                        // add to the collector
+                        collector.addInfo(info, ref);
+
+                        // Record progress
+                        progress.record(info.getSequenceName(), info.getPosition());
+                    }
+                }
+            });
+
+            //stop if the last required task was added to the service
+            if (stop) break;
         }
 
+        service.shutdown();
 
         final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
         collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
