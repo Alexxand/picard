@@ -55,10 +55,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.stream.IntStream;
 
 /**
@@ -207,6 +204,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     }
 
     final int MAX_BUFFER_SIZE = 100;
+    final int SEM_PERMITS = 2;
 
     @Override
     protected int doWork() {
@@ -256,6 +254,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
         ExecutorService service = Executors.newFixedThreadPool(2);
         List <Object[]> buffer = new ArrayList<Object[]>(MAX_BUFFER_SIZE);
+        final Semaphore sem = new Semaphore(SEM_PERMITS);
 
         // Loop through all the loci
         while (iterator.hasNext()) {
@@ -277,6 +276,14 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                 continue;
 
 
+            //If amount of tasks in processing is more than SEM_PERMITS then wait until place for the task will released
+            try {
+                sem.acquire();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+
+
             final List<Object[]> tmpBuffer = buffer;
             buffer = new ArrayList<>(MAX_BUFFER_SIZE);
 
@@ -288,11 +295,14 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                         final SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) pair[0];
                         final ReferenceSequence ref = (ReferenceSequence) pair[1];
 
-                        // add to the collector
+                        // Add to the collector
                             collector.addInfo(info, ref);
 
                         // Record progress
                         progress.record(info.getSequenceName(), info.getPosition());
+
+                        //Release place for a task
+                        sem.release();
                     }
                 }
             });
