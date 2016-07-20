@@ -58,6 +58,7 @@ import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
 /**
@@ -205,7 +206,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         new CollectWgsMetrics().instanceMainWithExit(args);
     }
 
-    final int MAX_BUFFER_SIZE = 200;
+    final int MAX_BUFFER_SIZE = 100;
 
     @Override
     protected int doWork() {
@@ -254,7 +255,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         long counter = 0;
 
         ExecutorService service = Executors.newFixedThreadPool(2);
-        List <Object[]> buffer = new ArrayList(MAX_BUFFER_SIZE);
+        List <Object[]> buffer = new ArrayList<Object[]>(MAX_BUFFER_SIZE);
 
         // Loop through all the loci
         while (iterator.hasNext()) {
@@ -288,7 +289,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                         final ReferenceSequence ref = (ReferenceSequence) pair[1];
 
                         // add to the collector
-                        collector.addInfo(info, ref);
+                            collector.addInfo(info, ref);
 
                         // Record progress
                         progress.record(info.getSequenceName(), info.getPosition());
@@ -302,6 +303,12 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
         service.shutdown();
 
+        try{
+            service.awaitTermination(1, TimeUnit.DAYS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        
         final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
         collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
         out.write(OUTPUT);
@@ -358,7 +365,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
                 if (recs.getBaseQuality() < MINIMUM_BASE_QUALITY ||
                         SequenceUtil.isNoCall(recs.getReadBase()))                  { ++basesExcludedByBaseq;   continue; }
-                if (!readNames.add(recs.getRecord().getReadName()))                 { ++basesExcludedByOverlap; continue; }
+                if (!readNames.add(recs.getRecord().getReadName()) )                { ++basesExcludedByOverlap; continue; }
 
                 pileupSize++;
                 if (pileupSize <= coverageCap) {
