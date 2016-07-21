@@ -296,14 +296,16 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                         final ReferenceSequence ref = (ReferenceSequence) pair[1];
 
                         // Add to the collector
+                        synchronized(collector){
                             collector.addInfo(info, ref);
-
+                        }
+                        
                         // Record progress
                         progress.record(info.getSequenceName(), info.getPosition());
 
-                        //Release place for a task
-                        sem.release();
                     }
+                    //Release place for a task
+                    sem.release();
                 }
             });
 
