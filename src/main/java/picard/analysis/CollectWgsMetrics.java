@@ -128,6 +128,15 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             "restrict the calculation just to individual positions without overlap, please see CollectWgsMetricsFromSampledSites.",
             optional = true, overridable = true)
     public File INTERVALS = null;
+    
+    @Option(doc = "Max size of buffer calculated in one thead pool's task")
+    public int MAX_BUFFER_SIZE = 100;
+    
+    @Option(doc = "Amount of semaphore's permits used for slow down reading")
+    final int SEM_PERMITS = 2;
+    
+    @Option(doc = "Amount of threads")
+    final int THREADS_AMOUNT = 2;
 
     private SAMFileHeader header = null;
 
@@ -203,9 +212,6 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         new CollectWgsMetrics().instanceMainWithExit(args);
     }
 
-    final int MAX_BUFFER_SIZE = 100;
-    final int SEM_PERMITS = 2;
-
     @Override
     protected int doWork() {
         IOUtil.assertFileIsReadable(INPUT);
@@ -252,7 +258,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         final long stopAfter = STOP_AFTER - 1;
         long counter = 0;
 
-        ExecutorService service = Executors.newFixedThreadPool(2);
+        ExecutorService service = Executors.newFixedThreadPool(THREADS_AMOUNT);
         List <Object[]> buffer = new ArrayList<Object[]>(MAX_BUFFER_SIZE);
         final Semaphore sem = new Semaphore(SEM_PERMITS);
 
@@ -271,9 +277,11 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             buffer.add(new Object[]{info,ref});
 
             //Check that the buffer is full or the last required record was added
-            final boolean stop = usingStopAfter && ++counter > stopAfter;
+            final boolean stop = usingStopAfter && ++counter > stopAfter || !iterator.hasNext();
             if (buffer.size() < MAX_BUFFER_SIZE && !stop)
                 continue;
+            
+            //System.out.println(iterator.hasNext());
 
 
             //If amount of tasks in processing is more than SEM_PERMITS then wait until place for the task will released
@@ -295,13 +303,13 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                         final SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) pair[0];
                         final ReferenceSequence ref = (ReferenceSequence) pair[1];
 
-                        // Add to the collector
                         synchronized(collector){
+                            // Add to the collector
                             collector.addInfo(info, ref);
+
+                            // Record progress
+                            progress.record(info.getSequenceName(), info.getPosition());
                         }
-                        
-                        // Record progress
-                        progress.record(info.getSequenceName(), info.getPosition());
 
                     }
                     //Release place for a task
