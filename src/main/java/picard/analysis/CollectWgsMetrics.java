@@ -130,7 +130,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     public File INTERVALS = null;
     
     @Option(doc = "Max size of buffer calculated in one thead pool's task")
-    public int MAX_BUFFER_SIZE = 100;
+    public int MAX_BUFFER_SIZE = 200;
     
     @Option(doc = "Amount of semaphore's permits used for slow down reading")
     final int SEM_PERMITS = 2;
@@ -212,6 +212,45 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         new CollectWgsMetrics().instanceMainWithExit(args);
     }
 
+
+    private static void submitBuffer(final List<Object[]> buffer,
+                                     final WgsMetricsCollector collector,
+                                     final ProgressLogger progress,
+                                     final ExecutorService service,
+                                     final Semaphore sem){
+
+        //If amount of tasks in processing is more than SEM_PERMITS then wait until place for the task will released
+        try {
+            sem.acquire();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        service.submit(new Runnable(){
+
+            @Override
+            public void run() {
+                for (final Object[] pair : buffer) {
+                    final SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) pair[0];
+                    final ReferenceSequence ref = (ReferenceSequence) pair[1];
+
+                    synchronized(collector){
+                        // Add to the collector
+                        collector.addInfo(info, ref);
+
+                        // Record progress
+                        progress.record(info.getSequenceName(), info.getPosition());
+                    }
+
+                }
+                //Release place for a task
+                sem.release();
+            }
+        });
+    }
+
+
+
     @Override
     protected int doWork() {
         IOUtil.assertFileIsReadable(INPUT);
@@ -259,67 +298,39 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         long counter = 0;
 
         ExecutorService service = Executors.newFixedThreadPool(THREADS_AMOUNT);
-        List <Object[]> buffer = new ArrayList<Object[]>(MAX_BUFFER_SIZE);
+        List <Object[]> buffer = new ArrayList<>(MAX_BUFFER_SIZE);
         final Semaphore sem = new Semaphore(SEM_PERMITS);
 
+        
         // Loop through all the loci
         while (iterator.hasNext()) {
+            
             final SamLocusIterator.LocusInfo info = iterator.next();
             final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
 
-
-
+            
             // Check that the reference is not N
             final byte base = ref.getBases()[info.getPosition() - 1];
             if (SequenceUtil.isNoCall(base)) continue;
 
-
             buffer.add(new Object[]{info,ref});
-
+            
             //Check that the buffer is full or the last required record was added
-            final boolean stop = usingStopAfter && ++counter > stopAfter || !iterator.hasNext();
+            final boolean stop = usingStopAfter && ++counter > stopAfter;
             if (buffer.size() < MAX_BUFFER_SIZE && !stop)
                 continue;
-            
-            //System.out.println(iterator.hasNext());
 
-
-            //If amount of tasks in processing is more than SEM_PERMITS then wait until place for the task will released
-            try {
-                sem.acquire();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-
-
-            final List<Object[]> tmpBuffer = buffer;
+            //submit the task of adding all pairs in buffer to collector and clear the buffer
+            submitBuffer(buffer, collector, progress, service, sem);
             buffer = new ArrayList<>(MAX_BUFFER_SIZE);
-
-            service.submit(new Runnable(){
-
-                @Override
-                public void run() {
-                    for (final Object[] pair : tmpBuffer) {
-                        final SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) pair[0];
-                        final ReferenceSequence ref = (ReferenceSequence) pair[1];
-
-                        synchronized(collector){
-                            // Add to the collector
-                            collector.addInfo(info, ref);
-
-                            // Record progress
-                            progress.record(info.getSequenceName(), info.getPosition());
-                        }
-
-                    }
-                    //Release place for a task
-                    sem.release();
-                }
-            });
 
             //stop if the last required task was added to the service
             if (stop) break;
         }
+
+        //submit the last buffer which size can be less than MAX_BUFFER_SIZE
+        if (!buffer.isEmpty())
+            submitBuffer(buffer, collector, progress, service, sem);
 
         service.shutdown();
 
@@ -335,6 +346,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
         return 0;
     }
+
 
     protected SAMFileHeader getSamFileHeader() {
         return this.header;
