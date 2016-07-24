@@ -129,14 +129,11 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             optional = true, overridable = true)
     public File INTERVALS = null;
     
-    @Option(doc = "Max size of buffer calculated in one thead pool's task")
-    public int MAX_BUFFER_SIZE = 200;
-    
-    @Option(doc = "Amount of semaphore's permits used for slow down reading")
-    final int SEM_PERMITS = 2;
-    
     @Option(doc = "Amount of threads")
-    final int THREADS_AMOUNT = 2;
+    public int THREADS_AMOUNT = 100;
+    
+    @Option(doc = "Max size of buffer calculated in one thead pool's task")
+    public int MAX_BUFFER_SIZE = 300;
 
     private SAMFileHeader header = null;
 
@@ -218,13 +215,14 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                                      final ProgressLogger progress,
                                      final ExecutorService service,
                                      final Semaphore sem){
-
+                                     
         //If amount of tasks in processing is more than SEM_PERMITS then wait until place for the task will released
         try {
             sem.acquire();
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+        
 
         service.submit(new Runnable(){
 
@@ -247,6 +245,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                 sem.release();
             }
         });
+        
     }
 
 
@@ -298,17 +297,14 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         long counter = 0;
 
         ExecutorService service = Executors.newFixedThreadPool(THREADS_AMOUNT);
+        final Semaphore sem = new Semaphore(THREADS_AMOUNT);
         List <Object[]> buffer = new ArrayList<>(MAX_BUFFER_SIZE);
-        final Semaphore sem = new Semaphore(SEM_PERMITS);
 
-        
         // Loop through all the loci
         while (iterator.hasNext()) {
-            
             final SamLocusIterator.LocusInfo info = iterator.next();
             final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
 
-            
             // Check that the reference is not N
             final byte base = ref.getBases()[info.getPosition() - 1];
             if (SequenceUtil.isNoCall(base)) continue;
@@ -339,7 +335,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        
+
         final MetricsFile<WgsMetrics, Integer> out = getMetricsFile();
         collector.addToMetricsFile(out, INCLUDE_BQ_HISTOGRAM, dupeFilter, mapqFilter, pairFilter);
         out.write(OUTPUT);
