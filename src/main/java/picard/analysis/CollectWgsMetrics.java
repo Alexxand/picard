@@ -310,18 +310,17 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             if (SequenceUtil.isNoCall(base)) continue;
 
             buffer.add(new Object[]{info,ref});
-            
-            //Check that the buffer is full or the last required record was added
-            final boolean stop = usingStopAfter && ++counter > stopAfter;
-            if (buffer.size() < MAX_BUFFER_SIZE && !stop)
+
+            //stop if the last required task was added to the service
+            if (usingStopAfter && ++counter > stopAfter) break;
+
+            //Check that the buffer is full
+            if (buffer.size() < MAX_BUFFER_SIZE)
                 continue;
 
             //submit the task of adding all pairs in buffer to collector and clear the buffer
             submitBuffer(buffer, collector, progress, service, sem);
             buffer = new ArrayList<>(MAX_BUFFER_SIZE);
-
-            //stop if the last required task was added to the service
-            if (stop) break;
         }
 
         //submit the last buffer which size can be less than MAX_BUFFER_SIZE
