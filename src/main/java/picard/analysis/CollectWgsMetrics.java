@@ -56,6 +56,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.stream.IntStream;
 
 /**
@@ -210,6 +213,8 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     }
 
 
+    final private static AtomicBoolean isLocked = new AtomicBoolean(false);
+
     private static void submitBuffer(final List<Object[]> buffer,
                                      final WgsMetricsCollector collector,
                                      final ProgressLogger progress,
@@ -232,13 +237,11 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                     final SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) pair[0];
                     final ReferenceSequence ref = (ReferenceSequence) pair[1];
 
-                    synchronized(collector){
-                        // Add to the collector
-                        collector.addInfo(info, ref);
+                    // Add to the collector
+                    collector.addInfo(info, ref);
 
-                        // Record progress
-                        progress.record(info.getSequenceName(), info.getPosition());
-                    }
+                    // Record progress
+                    progress.record(info.getSequenceName(), info.getPosition());
 
                 }
                 //Release place for a task
@@ -311,19 +314,18 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
             buffer.add(new Object[]{info,ref});
 
-            //stop if the last required task was added to the service
+            //Stop if the last required task was added to the service
             if (usingStopAfter && ++counter > stopAfter) break;
 
             //Check that the buffer is full
-            if (buffer.size() < MAX_BUFFER_SIZE)
-                continue;
+            if (buffer.size() < MAX_BUFFER_SIZE) continue;
 
-            //submit the task of adding all pairs in buffer to collector and clear the buffer
+            //Submit the task of adding all pairs in buffer to collector and clear the buffer
             submitBuffer(buffer, collector, progress, service, sem);
             buffer = new ArrayList<>(MAX_BUFFER_SIZE);
         }
 
-        //submit the last buffer which size can be less than MAX_BUFFER_SIZE
+        //Submit the last buffer which size can be less than MAX_BUFFER_SIZE
         if (!buffer.isEmpty())
             submitBuffer(buffer, collector, progress, service, sem);
 
@@ -367,19 +369,34 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         return new WgsMetricsCollector(coverageCap);
     }
 
+    public final class ReturnableAtomicLongArray extends AtomicLongArray{
+
+        public ReturnableAtomicLongArray(int length){
+            super(length);
+        }
+
+        public long[] getArray(){
+            final long[] array = new long[length()];
+            for (int i = 0;i < length();++i){
+                array[i] = get(i);
+            }
+            return array;
+        }
+    }
+
     protected class WgsMetricsCollector {
 
-        protected final long[] depthHistogramArray;
-        private   final long[] baseQHistogramArray;
+        protected final ReturnableAtomicLongArray atomicDepthHistogramArray;
+        private   final ReturnableAtomicLongArray atomicBaseQHistogramArray;
 
-        private long basesExcludedByBaseq = 0;
-        private long basesExcludedByOverlap = 0;
-        private long basesExcludedByCapping = 0;
+        private AtomicLong atomicBasesExcludedByBaseq = new AtomicLong(0);
+        private AtomicLong atomicBasesExcludedByOverlap = new AtomicLong(0);
+        private AtomicLong atomicBasesExcludedByCapping = new AtomicLong(0);
         protected final int coverageCap;
 
         public WgsMetricsCollector(final int coverageCap) {
-            depthHistogramArray = new long[coverageCap + 1];
-            baseQHistogramArray = new long[Byte.MAX_VALUE];
+            atomicDepthHistogramArray = new ReturnableAtomicLongArray(coverageCap + 1);
+            atomicBaseQHistogramArray = new ReturnableAtomicLongArray(Byte.MAX_VALUE);
             this.coverageCap = coverageCap;
         }
 
@@ -391,18 +408,18 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             for (final SamLocusIterator.RecordAndOffset recs : info.getRecordAndPositions()) {
 
                 if (recs.getBaseQuality() < MINIMUM_BASE_QUALITY ||
-                        SequenceUtil.isNoCall(recs.getReadBase()))                  { ++basesExcludedByBaseq;   continue; }
-                if (!readNames.add(recs.getRecord().getReadName()) )                { ++basesExcludedByOverlap; continue; }
+                        SequenceUtil.isNoCall(recs.getReadBase()))                  { atomicBasesExcludedByBaseq.incrementAndGet();   continue; }
+                if (!readNames.add(recs.getRecord().getReadName()) )                { atomicBasesExcludedByOverlap.incrementAndGet(); continue; }
 
                 pileupSize++;
                 if (pileupSize <= coverageCap) {
-                    baseQHistogramArray[recs.getRecord().getBaseQualities()[recs.getOffset()]]++;
+                    atomicBaseQHistogramArray.incrementAndGet(recs.getRecord().getBaseQualities()[recs.getOffset()]);
                 }
             }
 
             final int depth = Math.min(pileupSize, coverageCap);
-            if (depth < pileupSize) basesExcludedByCapping += pileupSize - coverageCap;
-            depthHistogramArray[depth]++;
+            if (depth < pileupSize) atomicBasesExcludedByCapping.addAndGet(pileupSize - coverageCap);
+            atomicDepthHistogramArray.incrementAndGet(depth);
         }
 
         public void addToMetricsFile(final MetricsFile<WgsMetrics, Integer> file,
@@ -435,10 +452,12 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         }
 
         protected Histogram<Integer> getDepthHistogram() {
+            final long[] depthHistogramArray = atomicDepthHistogramArray.getArray();
             return getHistogram(depthHistogramArray,"coverage", "count");
         }
 
         protected Histogram<Integer> getBaseQHistogram() {
+            final long[] baseQHistogramArray = atomicBaseQHistogramArray.getArray();
             return getHistogram(baseQHistogramArray, "value", "baseq_count");
         }
 
@@ -454,6 +473,14 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                                       final CountingFilter dupeFilter,
                                       final CountingFilter mapqFilter,
                                       final CountingPairedFilter pairFilter) {
+
+            //get usual value from atomic
+
+            final long basesExcludedByBaseq = atomicBasesExcludedByBaseq.get();
+            final long basesExcludedByOverlap = atomicBasesExcludedByOverlap.get();
+            final long basesExcludedByCapping = atomicBasesExcludedByCapping.get();
+
+            final long[] depthHistogramArray = atomicDepthHistogramArray.getArray();
 
             // the base q het histogram
 
