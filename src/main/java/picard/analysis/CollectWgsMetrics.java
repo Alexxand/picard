@@ -59,6 +59,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.IntStream;
 
 /**
@@ -134,6 +135,9 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     
     @Option(doc = "Amount of threads")
     public int THREADS_AMOUNT = 100;
+    
+    @Option(doc = "Permits for semaphore")
+    public int SEM_PERMITS=20;
     
     @Option(doc = "Max size of buffer calculated in one thead pool's task")
     public int MAX_BUFFER_SIZE = 300;
@@ -300,7 +304,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         long counter = 0;
 
         ExecutorService service = Executors.newFixedThreadPool(THREADS_AMOUNT);
-        final Semaphore sem = new Semaphore(THREADS_AMOUNT);
+        final Semaphore sem = new Semaphore(SEM_PERMITS);
         List <Object[]> buffer = new ArrayList<>(MAX_BUFFER_SIZE);
 
         // Loop through all the loci
@@ -369,34 +373,29 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         return new WgsMetricsCollector(coverageCap);
     }
 
-    public final class ReturnableAtomicLongArray extends AtomicLongArray{
-
-        public ReturnableAtomicLongArray(int length){
-            super(length);
+    protected static long[] longAdderListToLongArray(List<LongAdder> longAdderList){
+        long[] longArray = new long[longAdderList.size()];
+        int i = 0;
+        for (LongAdder item : longAdderList) {
+            longArray[i] = item.sum();
+            ++i;
         }
-
-        public long[] getArray(){
-            final long[] array = new long[length()];
-            for (int i = 0;i < length();++i){
-                array[i] = get(i);
-            }
-            return array;
-        }
+        return longArray;
     }
 
     protected class WgsMetricsCollector {
 
-        protected final ReturnableAtomicLongArray atomicDepthHistogramArray;
-        private   final ReturnableAtomicLongArray atomicBaseQHistogramArray;
+        protected final List<LongAdder> atomicDepthHistogramArray;
+        private   final List<LongAdder> atomicBaseQHistogramArray;
 
-        private AtomicLong atomicBasesExcludedByBaseq = new AtomicLong(0);
-        private AtomicLong atomicBasesExcludedByOverlap = new AtomicLong(0);
-        private AtomicLong atomicBasesExcludedByCapping = new AtomicLong(0);
+        private LongAdder atomicBasesExcludedByBaseq = new LongAdder();
+        private LongAdder atomicBasesExcludedByOverlap = new LongAdder();
+        private LongAdder atomicBasesExcludedByCapping = new LongAdder();
         protected final int coverageCap;
 
         public WgsMetricsCollector(final int coverageCap) {
-            atomicDepthHistogramArray = new ReturnableAtomicLongArray(coverageCap + 1);
-            atomicBaseQHistogramArray = new ReturnableAtomicLongArray(Byte.MAX_VALUE);
+            atomicDepthHistogramArray = new ArrayList<>(coverageCap + 1);
+            atomicBaseQHistogramArray = new ArrayList<>(Byte.MAX_VALUE);
             this.coverageCap = coverageCap;
         }
 
@@ -408,18 +407,18 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             for (final SamLocusIterator.RecordAndOffset recs : info.getRecordAndPositions()) {
 
                 if (recs.getBaseQuality() < MINIMUM_BASE_QUALITY ||
-                        SequenceUtil.isNoCall(recs.getReadBase()))                  { atomicBasesExcludedByBaseq.incrementAndGet();   continue; }
-                if (!readNames.add(recs.getRecord().getReadName()) )                { atomicBasesExcludedByOverlap.incrementAndGet(); continue; }
+                        SequenceUtil.isNoCall(recs.getReadBase()))                  { atomicBasesExcludedByBaseq.increment();   continue; }
+                if (!readNames.add(recs.getRecord().getReadName()) )                { atomicBasesExcludedByOverlap.increment(); continue; }
 
                 pileupSize++;
                 if (pileupSize <= coverageCap) {
-                    atomicBaseQHistogramArray.incrementAndGet(recs.getRecord().getBaseQualities()[recs.getOffset()]);
+                    atomicBaseQHistogramArray.get(recs.getRecord().getBaseQualities()[recs.getOffset()]).increment();
                 }
             }
 
             final int depth = Math.min(pileupSize, coverageCap);
-            if (depth < pileupSize) atomicBasesExcludedByCapping.addAndGet(pileupSize - coverageCap);
-            atomicDepthHistogramArray.incrementAndGet(depth);
+            if (depth < pileupSize) atomicBasesExcludedByCapping.add(pileupSize - coverageCap);
+            atomicDepthHistogramArray.get(depth).increment();
         }
 
         public void addToMetricsFile(final MetricsFile<WgsMetrics, Integer> file,
@@ -452,12 +451,12 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         }
 
         protected Histogram<Integer> getDepthHistogram() {
-            final long[] depthHistogramArray = atomicDepthHistogramArray.getArray();
+            final long[] depthHistogramArray = longAdderListToLongArray(atomicDepthHistogramArray);
             return getHistogram(depthHistogramArray,"coverage", "count");
         }
 
         protected Histogram<Integer> getBaseQHistogram() {
-            final long[] baseQHistogramArray = atomicBaseQHistogramArray.getArray();
+            final long[] baseQHistogramArray = longAdderListToLongArray(atomicBaseQHistogramArray);
             return getHistogram(baseQHistogramArray, "value", "baseq_count");
         }
 
@@ -476,11 +475,11 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
 
             //get usual value from atomic
 
-            final long basesExcludedByBaseq = atomicBasesExcludedByBaseq.get();
-            final long basesExcludedByOverlap = atomicBasesExcludedByOverlap.get();
-            final long basesExcludedByCapping = atomicBasesExcludedByCapping.get();
+            final long basesExcludedByBaseq = atomicBasesExcludedByBaseq.sum();
+            final long basesExcludedByOverlap = atomicBasesExcludedByOverlap.sum();
+            final long basesExcludedByCapping = atomicBasesExcludedByCapping.sum();
 
-            final long[] depthHistogramArray = atomicDepthHistogramArray.getArray();
+            final long[] depthHistogramArray = longAdderListToLongArray(atomicDepthHistogramArray);
 
             // the base q het histogram
 
