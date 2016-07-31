@@ -56,9 +56,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.concurrent.atomic.LongAccumulator;
 import java.util.stream.IntStream;
 
 /**
@@ -133,9 +133,12 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     public File INTERVALS = null;
     
     @Option(doc = "Amount of threads")
-    public int THREADS_AMOUNT = 100;
-    
-    @Option(doc = "Max size of buffer calculated in one thead pool's task")
+    public int THREADS_AMOUNT = 4;
+
+    @Option(doc = "Permits for semaphore")
+    public int SEM_PERMITS = 30000000;
+
+    @Option(doc = "Max size of buffer calculated in one thread pool's task")
     public int MAX_BUFFER_SIZE = 300;
 
     private SAMFileHeader header = null;
@@ -213,7 +216,16 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     }
 
 
-    final private static AtomicBoolean isLocked = new AtomicBoolean(false);
+    private static int getBufferRecsNumber(final List<Object[]> buffer){
+        int recsNum = 0;
+        for (final Object[] pair : buffer){
+            SamLocusIterator.LocusInfo info = (SamLocusIterator.LocusInfo) pair[0];
+            recsNum += info.getRecordAndPositions().size();
+        }
+        return recsNum;
+    }
+
+    private static long allRecordsInRAM = 0;
 
     private static void submitBuffer(final List<Object[]> buffer,
                                      final WgsMetricsCollector collector,
@@ -221,13 +233,14 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                                      final ExecutorService service,
                                      final Semaphore sem){
                                      
-        //If amount of tasks in processing is more than SEM_PERMITS then wait until place for the task will released
+        final int allRecordsInBuffer = getBufferRecsNumber(buffer);
+
+        //If number of records covering loci in buffer more than SEM_PERMITS then wait until place for the records will released
         try {
-            sem.acquire();
+            sem.acquire(allRecordsInBuffer);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        
 
         service.submit(new Runnable(){
 
@@ -244,8 +257,8 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
                     progress.record(info.getSequenceName(), info.getPosition());
 
                 }
-                //Release place for a task
-                sem.release();
+                //Release place for records
+                sem.release(allRecordsInBuffer);
             }
         });
         
@@ -300,7 +313,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         long counter = 0;
 
         ExecutorService service = Executors.newFixedThreadPool(THREADS_AMOUNT);
-        final Semaphore sem = new Semaphore(THREADS_AMOUNT);
+        final Semaphore sem = new Semaphore(SEM_PERMITS);
         List <Object[]> buffer = new ArrayList<>(MAX_BUFFER_SIZE);
 
         // Loop through all the loci
@@ -384,6 +397,8 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         }
     }
 
+    //static long AllRecs;
+
     protected class WgsMetricsCollector {
 
         protected final ReturnableAtomicLongArray atomicDepthHistogramArray;
@@ -405,6 +420,8 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             // Figure out the coverage while not counting overlapping reads twice, and excluding various things
             final HashSet<String> readNames = new HashSet<>(info.getRecordAndPositions().size());
             int pileupSize = 0;
+            //AllRecs += info.getRecordAndPositions().size();
+            //System.out.println(info.getRecordAndPositions().size() + " " + info.getDeletedInRecord().size() + " " + info.getInsertedInRecord().size());
             for (final SamLocusIterator.RecordAndOffset recs : info.getRecordAndPositions()) {
 
                 if (recs.getBaseQuality() < MINIMUM_BASE_QUALITY ||
