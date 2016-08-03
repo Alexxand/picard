@@ -130,7 +130,10 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     public File INTERVALS = null;
     
     @Option(doc = "Amount of threads")
-    public int THREADS_AMOUNT = 100;
+    public int THREADS_AMOUNT = 2;
+    
+    @Option(doc = "Permits for semaphore")
+    public int SEM_PERMITS = 6;
     
     @Option(doc = "Max size of buffer calculated in one thead pool's task")
     public int MAX_BUFFER_SIZE = 300;
@@ -297,7 +300,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
         long counter = 0;
 
         ExecutorService service = Executors.newFixedThreadPool(THREADS_AMOUNT);
-        final Semaphore sem = new Semaphore(THREADS_AMOUNT);
+        final Semaphore sem = new Semaphore(SEM_PERMITS);
         List <Object[]> buffer = new ArrayList<>(MAX_BUFFER_SIZE);
 
         // Loop through all the loci
